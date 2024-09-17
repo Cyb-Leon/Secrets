@@ -2,11 +2,16 @@ import express from "express";
 import bodyParser from "body-parser";
 import pg from "pg";
 import { configDotenv } from "dotenv";
+import bcrypt from  "bcrypt";
 
 configDotenv();
 
 const app = express();
 const port = process.env.serverPort;
+
+//hash object //choice encryption method
+const hash =   crypto.createHash('sha512');
+hash.digest('hex');
 
 //database connection
 const SecretesDB = new pg.Client({
@@ -41,10 +46,12 @@ app.post("/register", async (req, res) => {
    * check if the user exists and redirect user to login
    * if user does not exist  - store new user to database
    **/
+  const data = hash.update(password);
+  const pwd_Hashed = data;
   try {
     const isUserExists = await SecretesDB.query(
-      "SELECT * FROM users WHERE email = $1 AND password = $2",
-      [username, password]
+      "SELECT * FROM users WHERE email = $1",
+      [username]
     );
 
     //check if row is empty
@@ -52,7 +59,7 @@ app.post("/register", async (req, res) => {
       //const newUser = await SecretesDB;
       const newUser = await SecretesDB.query(
         "INSERT INTO users (email, password) VALUES ($1, $2)",
-        [username, password]
+        [username, pwd_Hashed]
       );
       console.log(`New user has been Registered ${newUser}`);
       res.render("secrets.ejs");
@@ -70,10 +77,15 @@ app.post("/login", async (req, res) => {
   const username = req.body.username;
   const password = req.body.password;
 
+
+  //hash
+
+  const pwd_Hashed = hash;
+
   try {
     const isUserExists = await SecretesDB.query(
       "SELECT * FROM users WHERE email = $1",
-      [username, password]
+      [username, pwd_Hashed]
     );
 
     //if rowCount is 0 - user does not exist, therefore not registered
