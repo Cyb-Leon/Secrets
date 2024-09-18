@@ -6,6 +6,7 @@ import bcrypt from "bcrypt";
 import session from "express-session";
 import passport from "passport";
 import { Strategy } from "passport-local";
+import GoogleStrategy from "passport-google-oauth2";
 
 configDotenv();
 
@@ -22,8 +23,8 @@ app.use(
     resave: false,
     saveUninitialized: true,
     cookie: {
-      maxAge: 1000 * 60 * 60 * 24
-    }
+      maxAge: 1000 * 60 * 60 * 24,
+    },
   })
 );
 
@@ -51,6 +52,33 @@ app.get("/login", (req, res) => {
 app.get("/register", (req, res) => {
   res.render("register.ejs");
 });
+
+//get page which requires authentication.
+app.get("/secrets", (req, res) => {
+  console.log(req.user);
+  const user = req.user;
+  if (req.isAuthenticated()) {
+    res.render("secrets.ejs",{secret: user.secret});
+  } else {
+    res.redirect("/login");
+  }
+});
+
+//google auth
+app.get(
+  "/auth/google",
+  passport.authenticate("google", {
+    scope: ["profile", "email"],
+  })
+);
+
+app.get(
+  "/auth/google/secrets",
+  passport.authenticate("google", {
+    successRedirect: "/secrets",
+    failureRedirect: "/login",
+  })
+);
 
 app.post("/register", async (req, res) => {
   const username = req.body.username;
@@ -82,10 +110,10 @@ app.post("/register", async (req, res) => {
           );
           //render scerets page
           const user = newUser.rows[0];
-          req.login(user,(err) => {
+          req.login(user, (err) => {
             console.log(err);
             res.redirect("/secrets");
-          })
+          });
         }
       });
     } else {
@@ -98,72 +126,134 @@ app.post("/register", async (req, res) => {
   }
 });
 
-app.post("/login",passport.authenticate("local",{
- //set options
-successRedirect: '/secrets',
-failureRedirect: '/login'
+app.post(
+  "/login",
+  passport.authenticate("local", {
+    //set options
+    successRedirect: "/secrets",
+    failureRedirect: "/login",
+  })
+);
 
-}));
+//submit a secret - only if authenticated
+app.get("/submit", (req, res) => {
 
-//get page which requires authentication.
-app.get("/secrets", (req, res) => {
-  console.log(req.user);
   if (req.isAuthenticated()) {
-    res.render("secrets.ejs");
+    res.render("submit.ejs");
   } else {
     res.redirect('/login');
   }
-  
+});
+
+//
+app.post("/submit", async (req, res) => {
+  const postSecret = req.body.secret;
+  const user = req.user;
+
+  try {
+    const updateSecret = await SecretesDB.query(
+      "UPDATE users SET secret = $1 WHERE email = $2",
+      [postSecret, user.email]
+    );
+    console.log(updateSecret.rows[0]);
+    res.redirect("/secrets");
+  } catch (error) {
+    console.log(error);
+    res.send("error updating");
+  }
+});
+
+app.get("/logout", (req, res) => {
+  req.logout((error) => {
+    if (error) console.log(error);
+    res.redirect("/login");
+  });
 });
 
 //Creating the strategy for auth verification via sessions
-passport.use(new Strategy(async function verify(username,password, cb){
-  try {
-    const isUserExists = await SecretesDB.query(
-      "SELECT * FROM users WHERE email = $1",
-      [username]
-    );
+passport.use(
+  "local",
+  new Strategy(async function verify(username, password, cb) {
+    try {
+      const isUserExists = await SecretesDB.query(
+        "SELECT * FROM users WHERE email = $1",
+        [username]
+      );
 
-    //if rowCount is 0 - user does not exist, therefore not registered
-    if (isUserExists.rowCount != 0) {
-      //we get user that exists and check their data with the given data for /login
-      const user = isUserExists.rows[0];
-      const storedHashpsw = user.password;
+      //if rowCount is 0 - user does not exist, therefore not registered
+      if (isUserExists.rowCount != 0) {
+        //we get user that exists and check their data with the given data for /login
+        const user = isUserExists.rows[0];
+        const storedHashpsw = user.password;
 
-      //decrypt and compare
-      bcrypt.compare(password, storedHashpsw, (error, isCorrectPsw) => {
-        if (error) {
-          return cb(error);
-        } else {
-          //if password is correct - render secrets.
-          if (isCorrectPsw == true) {
-            return cb(null, user);
+        //decrypt and compare
+        bcrypt.compare(password, storedHashpsw, (error, isCorrectPsw) => {
+          if (error) {
+            return cb(error);
           } else {
-            return cb(null,false);
+            //if password is correct - render secrets.
+            if (isCorrectPsw == true) {
+              return cb(null, user);
+            } else {
+              return cb(null, false);
+            }
           }
-        }
-      });
-    } else {
-      console.log("You are not registered to Secrets.");
-      return cb("You are not registered to Secrets: User not found");
+        });
+      } else {
+        console.log("You are not registered to Secrets.");
+        return cb("You are not registered to Secrets: User not found");
+      }
+    } catch (error) {
+      console.log(error);
+      //db issue catch
+      return cb(error);
     }
-  } catch (error) {
-    console.log(error);
-    //db issue catch
-    return cb(error);
-  }
-}))
+  })
+);
+
+//create the googleStrategy OAuth
+passport.use(
+  "google",
+  new GoogleStrategy(
+    {
+      clientID: process.env.googleOAuth_CLIENT_IDKEY,
+      clientSecret: process.env.googleOAuth_CLIENT_SECRET_KEY,
+      callbackURL: "http://localhost:3000/auth/google/secrets",
+      userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo",
+    },
+    async (accessToken, refreshToken, profile, cb) => {
+      console.log(profile);
+      try {
+        const result = await SecretesDB.query(
+          "SELECT * FROM users WHERE email = $1",
+          [profile.email]
+        );
+        if (result.rowCount === 0) {
+          const newUser = await SecretesDB.query(
+            "INSERT INTO users (email,password) VALUES ($1,$2)",
+            [profile.email, "google"]
+          );
+          cb(null, newUser.rows[0]);
+        } else {
+          //you exists
+          cb(null, result.rows[0]);
+        }
+      } catch (error) {
+        cb(error);
+      }
+    }
+  )
+);
 
 //serialzeUser - save data of logged in user to localStorage
-passport.serializeUser((user,cb) =>{
-  cb(null,user);
-})
-
+passport.serializeUser((user, cb) => {
+  cb(null, user);
+});
 
 //deserialzeUser - access data of logged in user from localStorage
-passport.deserializeUser((user,cb) =>{
-  cb(null,user);
-})
+passport.deserializeUser((user, cb) => {
+  cb(null, user);
+});
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
