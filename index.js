@@ -54,26 +54,35 @@ app.get("/register", (req, res) => {
 });
 
 //get page which requires authentication.
-app.get("/secrets", (req, res) => {
+app.get("/secrets", async (req, res) => {
   console.log(req.user);
   const user = req.user;
   if (req.isAuthenticated()) {
-    res.render("secrets.ejs",{secret: user.secret});
+    try {
+      const result = await SecretesDB.query("SELECT secret FROM users WHERE email = $1", [user.email])
+
+      //check if there is any secret
+      if (result.rows[0].secret) {
+        res.render("secrets.ejs",{secret: result.rows[0].secret});
+      } else {
+        res.render("secrets.ejs",{secret: "You should submit a secret!"});
+      }
+    } catch (error) {
+      console.log("error pulling data:" + error);
+    }
   } else {
     res.redirect("/login");
   }
 });
 
 //google auth
-app.get(
-  "/auth/google",
+app.get("/auth/google",
   passport.authenticate("google", {
     scope: ["profile", "email"],
   })
 );
 
-app.get(
-  "/auth/google/secrets",
+app.get("/auth/google/secrets",
   passport.authenticate("google", {
     successRedirect: "/secrets",
     failureRedirect: "/login",
@@ -126,8 +135,7 @@ app.post("/register", async (req, res) => {
   }
 });
 
-app.post(
-  "/login",
+app.post("/login",
   passport.authenticate("local", {
     //set options
     successRedirect: "/secrets",
@@ -151,11 +159,11 @@ app.post("/submit", async (req, res) => {
   const user = req.user;
 
   try {
-    const updateSecret = await SecretesDB.query(
+     await SecretesDB.query(
       "UPDATE users SET secret = $1 WHERE email = $2",
       [postSecret, user.email]
     );
-    console.log(updateSecret.rows[0]);
+
     res.redirect("/secrets");
   } catch (error) {
     console.log(error);
@@ -171,8 +179,7 @@ app.get("/logout", (req, res) => {
 });
 
 //Creating the strategy for auth verification via sessions
-passport.use(
-  "local",
+passport.use("local",
   new Strategy(async function verify(username, password, cb) {
     try {
       const isUserExists = await SecretesDB.query(
@@ -212,8 +219,7 @@ passport.use(
 );
 
 //create the googleStrategy OAuth
-passport.use(
-  "google",
+passport.use("google",
   new GoogleStrategy(
     {
       clientID: process.env.googleOAuth_CLIENT_IDKEY,
